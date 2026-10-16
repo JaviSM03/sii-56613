@@ -1,195 +1,378 @@
-// Mundo.cpp: implementation of the CMundo class.
-//
-//////////////////////////////////////////////////////////////////////
+/*
+ * Práctica 2 - Sistemas Informáticos Industriales - Javier Serrano Molina 
+ * Juego Pong con comunicación FIFO
+ * Finalización de la partida automática cuando uno de los 2 jugadores llega a 3 puntos
+ */
+
 #include <fstream>
 #include "Mundo.h"
 #include "glut.h"
 
-#include <stdlib.h>
-#include <stdio.h>
-#include <string.h>
-#include <math.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
 
-//////////////////////////////////////////////////////////////////////
-// Construction/Destruction
-//////////////////////////////////////////////////////////////////////
-
-CMundo::CMundo()
+namespace
 {
-	Init();
+    int fd_fifo = -1;
+
+    // Puntos necesarios para ganar
+    const int PUNTOS_PARA_GANAR = 3;
+
+    // Mostrar el texto y enviarlo a logger
+    void enviarTexto(const char *texto)
+    {
+        
+        if (fd_fifo >= 0)
+        {
+            ssize_t resultado = write(
+                fd_fifo,
+                texto,
+                std::strlen(texto) + 1
+            );
+
+            if (resultado < 0)
+                std::perror("Error al escribir en FIFO");
+        }
+    }
+
+    // Notificar los puntos de cada jugador
+    void registrarPunto(int jugador, int total)
+    {
+        char aviso[128];
+
+        std::snprintf(
+            aviso,
+            sizeof(aviso),
+            "Jugador %d marca 1 punto, lleva un total de %d puntos\n",
+            jugador,
+            total
+        );
+
+        enviarTexto(aviso);
+    }
+
+    // Terminar el juego cuando exista un ganador
+    void finalizarPartida(int ganador)
+    {
+        char avisoFinal[128];
+
+        std::snprintf(
+            avisoFinal,
+            sizeof(avisoFinal),
+            "\nFIN DE LA PARTIDA - GANADOR: JUGADOR %d\n",
+            ganador
+        );
+
+        enviarTexto(avisoFinal);
+
+        // Cerrar FIFO para que logger reciba EOF
+        if (fd_fifo >= 0)
+        {
+            close(fd_fifo);
+            fd_fifo = -1;
+        }
+
+        // Finalizar el proceso tenis
+        std::exit(EXIT_SUCCESS);
+    }
+}
+
+CMundo::CMundo() : puntos1(0), puntos2(0)
+{
+    Init();
 }
 
 CMundo::~CMundo()
 {
-
+    if (fd_fifo >= 0)
+    {
+        close(fd_fifo);
+        fd_fifo = -1;
+    }
 }
 
 void CMundo::InitGL()
 {
-	//Habilitamos las luces, la renderizacion y el color de los materiales
-	glEnable(GL_LIGHT0);
-	glEnable(GL_LIGHTING);
-	glEnable(GL_DEPTH_TEST);
-	glEnable(GL_COLOR_MATERIAL);
-	
-	glMatrixMode(GL_PROJECTION);
-	gluPerspective( 40.0, 800/600.0f, 0.1, 150);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_COLOR_MATERIAL);
+    glEnable(GL_LIGHTING);
+    glEnable(GL_LIGHT0);
+
+    glMatrixMode(GL_PROJECTION);
+    gluPerspective(40.0, 800 / 600.0f, 0.1, 150);
 }
 
-void print(char *mensaje, int x, int y, float r, float g, float b)
+void print(char *texto, int posX, int posY,
+           float rojo, float verde, float azul)
 {
-	glDisable (GL_LIGHTING);
+    glDisable(GL_LIGHTING);
 
-	glMatrixMode(GL_TEXTURE);
-	glPushMatrix();
-	glLoadIdentity();
+    glMatrixMode(GL_TEXTURE);
+    glPushMatrix();
+    glLoadIdentity();
 
-	glMatrixMode(GL_PROJECTION);
-	glPushMatrix();
-	glLoadIdentity();
-	gluOrtho2D(0, glutGet(GLUT_WINDOW_WIDTH), 0, glutGet(GLUT_WINDOW_HEIGHT) );
+    glMatrixMode(GL_PROJECTION);
+    glPushMatrix();
+    glLoadIdentity();
 
-	glMatrixMode(GL_MODELVIEW);
-	glPushMatrix();
-	glLoadIdentity();
+    gluOrtho2D(
+        0, glutGet(GLUT_WINDOW_WIDTH),
+        0, glutGet(GLUT_WINDOW_HEIGHT)
+    );
 
-	glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-	glDisable(GL_DEPTH_TEST);
-	glDisable(GL_BLEND);
-	glColor3f(r,g,b);
-	glRasterPos3f(x, glutGet(GLUT_WINDOW_HEIGHT)-18-y, 0);
-	int len = strlen (mensaje );
-	for (int i = 0; i < len; i++) 
-		glutBitmapCharacter (GLUT_BITMAP_HELVETICA_18, mensaje[i] );
-		
-	glMatrixMode(GL_TEXTURE);
-	glPopMatrix();
+    glMatrixMode(GL_MODELVIEW);
+    glPushMatrix();
+    glLoadIdentity();
 
-	glMatrixMode(GL_PROJECTION);
-	glPopMatrix();
+    glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    glDisable(GL_DEPTH_TEST);
+    glDisable(GL_BLEND);
 
-	glMatrixMode(GL_MODELVIEW);
-	glPopMatrix();
+    glColor3f(rojo, verde, azul);
 
-	glEnable( GL_DEPTH_TEST );
+    glRasterPos3f(
+        posX,
+        glutGet(GLUT_WINDOW_HEIGHT) - 18 - posY,
+        0
+    );
+
+    int longitud = std::strlen(texto);
+
+    for (int letra = 0; letra < longitud; ++letra)
+    {
+        glutBitmapCharacter(
+            GLUT_BITMAP_HELVETICA_18,
+            texto[letra]
+        );
+    }
+
+    glMatrixMode(GL_TEXTURE);
+    glPopMatrix();
+
+    glMatrixMode(GL_PROJECTION);
+    glPopMatrix();
+
+    glMatrixMode(GL_MODELVIEW);
+    glPopMatrix();
+
+    glEnable(GL_DEPTH_TEST);
 }
+
 void CMundo::OnDraw()
 {
-	//Borrado de la pantalla	
-   	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    auto &jug1 = jugador1;
+    auto &jug2 = jugador2;
+    auto &bola = esfera;
 
-	//Para definir el punto de vista
-	glMatrixMode(GL_MODELVIEW);	
-	glLoadIdentity();
-	
-	gluLookAt(0.0, 0, 17,  // posicion del ojo
-		0.0, 0.0, 0.0,      // hacia que punto mira  (0,0,0) 
-		0.0, 1.0, 0.0);      // definimos hacia arriba (eje Y)    
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-	/////////////////
-	///////////
-	//		AQUI EMPIEZA MI DIBUJO
-	char cad[100];
-	sprintf(cad,"Jugador1: %d",puntos1);
-	print(cad,10,0,1,1,1);
-	sprintf(cad,"Jugador2: %d",puntos2);
-	print(cad,650,0,1,1,1);
-	int i;
-	for(i=0;i<paredes.size();i++)
-		paredes[i].Dibuja();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
 
-	fondo_izq.Dibuja();
-	fondo_dcho.Dibuja();
-	jugador1.Dibuja();
-	jugador2.Dibuja();
-	esfera.Dibuja();
+    gluLookAt(
+        0.0, 0.0, 17.0,
+        0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0
+    );
 
-	/////////////////
-	///////////
-	//		AQUI TERMINA MI DIBUJO
-	////////////////////////////
+    // Mostrar marcador
+    char marcador[100];
 
-	//Al final, cambiar el buffer
-	glutSwapBuffers();
+    std::snprintf(
+        marcador, sizeof(marcador),
+        "Jugador1: %d", puntos1
+    );
+
+    print(marcador, 10, 0, 1, 1, 1);
+
+    std::snprintf(
+        marcador, sizeof(marcador),
+        "Jugador2: %d", puntos2
+    );
+
+    print(marcador, 650, 0, 1, 1, 1);
+
+    // Dibujar paredes
+    for (auto &pared : paredes)
+    {
+        pared.Dibuja();
+    }
+
+    // Dibujar limites
+    fondo_izq.Dibuja();
+    fondo_dcho.Dibuja();
+
+    // Dibujar jugadores y pelota
+    jug1.Dibuja();
+    jug2.Dibuja();
+    bola.Dibuja();
+
+    glutSwapBuffers();
 }
 
 void CMundo::OnTimer(int value)
-{	
-	jugador1.Mueve(0.025f);
-	jugador2.Mueve(0.025f);
-	esfera.Mueve(0.025f);
-	int i;
-	for(i=0;i<paredes.size();i++)
-	{
-		paredes[i].Rebota(esfera);
-		paredes[i].Rebota(jugador1);
-		paredes[i].Rebota(jugador2);
-	}
+{
+    auto &jug1 = jugador1;
+    auto &jug2 = jugador2;
+    auto &bola = esfera;
 
-	jugador1.Rebota(esfera);
-	jugador2.Rebota(esfera);
-	if(fondo_izq.Rebota(esfera))
-	{
-		esfera.centro.x=0;
-		esfera.centro.y=rand()/(float)RAND_MAX;
-		esfera.velocidad.x=2+2*rand()/(float)RAND_MAX;
-		esfera.velocidad.y=2+2*rand()/(float)RAND_MAX;
-		puntos2++;
-	}
+    const float tiempo = 0.025f;
 
-	if(fondo_dcho.Rebota(esfera))
-	{
-		esfera.centro.x=0;
-		esfera.centro.y=rand()/(float)RAND_MAX;
-		esfera.velocidad.x=-2-2*rand()/(float)RAND_MAX;
-		esfera.velocidad.y=-2-2*rand()/(float)RAND_MAX;
-		puntos1++;
-	}
+    // Actualizar movimientos
+    jug1.Mueve(tiempo);
+    jug2.Mueve(tiempo);
+    bola.Mueve(tiempo);
 
+    // Rebotes contra las paredes
+    for (auto &pared : paredes)
+    {
+        pared.Rebota(bola);
+        pared.Rebota(jug1);
+        pared.Rebota(jug2);
+    }
+
+    // Rebotes contra las raquetas
+    jug1.Rebota(bola);
+    jug2.Rebota(bola);
+
+    if (fondo_izq.Rebota(bola))
+    {
+        puntos2++;
+
+        // Reiniciar posicion
+        bola.centro.x = 0;
+        bola.centro.y =
+            std::rand() / (float)RAND_MAX;
+
+        // Nueva velocidad hacia la derecha
+        bola.velocidad.x =
+            2 + 2 * std::rand() / (float)RAND_MAX;
+
+        bola.velocidad.y =
+            2 + 2 * std::rand() / (float)RAND_MAX;
+
+        // Avisar al logger
+        registrarPunto(2, puntos2);
+
+        // Comprobar si ha ganado
+        if (puntos2 >= PUNTOS_PARA_GANAR)
+        {
+            finalizarPartida(2);
+        }
+    }
+
+    if (fondo_dcho.Rebota(bola))
+    {
+        puntos1++;
+
+        // Reiniciar posicion
+        bola.centro.x = 0;
+        bola.centro.y =
+            std::rand() / (float)RAND_MAX;
+
+        // Nueva velocidad hacia la izquierda
+        bola.velocidad.x =
+            -2 - 2 * std::rand() / (float)RAND_MAX;
+
+        bola.velocidad.y =
+            -2 - 2 * std::rand() / (float)RAND_MAX;
+
+        // Avisar al logger
+        registrarPunto(1, puntos1);
+
+        // Comprobar si ha ganado
+        if (puntos1 >= PUNTOS_PARA_GANAR)
+        {
+            finalizarPartida(1);
+        }
+    }
 }
 
-void CMundo::OnKeyboardDown(unsigned char key, int x, int y)
+void CMundo::OnKeyboardDown(unsigned char tecla,
+                             int x, int y)
 {
-	switch(key)
-	{
-//	case 'a':jugador1.velocidad.x=-1;break;
-//	case 'd':jugador1.velocidad.x=1;break;
-	case 's':jugador1.velocidad.y=-4;break;
-	case 'w':jugador1.velocidad.y=4;break;
-	case 'l':jugador2.velocidad.y=-4;break;
-	case 'o':jugador2.velocidad.y=4;break;
+    auto &vel1 = jugador1.velocidad;
+    auto &vel2 = jugador2.velocidad;
 
-	}
+    switch (tecla)
+    {
+        // Jugador 1
+        case 'w':
+            vel1.y = 4;
+            break;
+
+        case 's':
+            vel1.y = -4;
+            break;
+
+        // Jugador 2
+        case 'o':
+            vel2.y = 4;
+            break;
+
+        case 'l':
+            vel2.y = -4;
+            break;
+    }
 }
 
 void CMundo::Init()
 {
-	Plano p;
-//pared inferior
-	p.x1=-7;p.y1=-5;
-	p.x2=7;p.y2=-5;
-	paredes.push_back(p);
+    auto &jug1 = jugador1;
+    auto &jug2 = jugador2;
 
-//superior
-	p.x1=-7;p.y1=5;
-	p.x2=7;p.y2=5;
-	paredes.push_back(p);
+    Plano borde;
 
-	fondo_izq.r=0;
-	fondo_izq.x1=-7;fondo_izq.y1=-5;
-	fondo_izq.x2=-7;fondo_izq.y2=5;
+    // Pared inferior
+    borde.x1 = -7;
+    borde.y1 = -5;
+    borde.x2 = 7;
+    borde.y2 = -5;
+    paredes.push_back(borde);
 
-	fondo_dcho.r=0;
-	fondo_dcho.x1=7;fondo_dcho.y1=-5;
-	fondo_dcho.x2=7;fondo_dcho.y2=5;
+    // Pared superior
+    borde.x1 = -7;
+    borde.y1 = 5;
+    borde.x2 = 7;
+    borde.y2 = 5;
+    paredes.push_back(borde);
 
-	//a la izq
-	jugador1.g=0;
-	jugador1.x1=-6;jugador1.y1=-1;
-	jugador1.x2=-6;jugador1.y2=1;
+    // Limite izquierdo
+    fondo_izq.r = 0;
+    fondo_izq.x1 = -7;
+    fondo_izq.y1 = -5;
+    fondo_izq.x2 = -7;
+    fondo_izq.y2 = 5;
 
-	//a la dcha
-	jugador2.g=0;
-	jugador2.x1=6;jugador2.y1=-1;
-	jugador2.x2=6;jugador2.y2=1;
+    // Limite derecho
+    fondo_dcho.r = 0;
+    fondo_dcho.x1 = 7;
+    fondo_dcho.y1 = -5;
+    fondo_dcho.x2 = 7;
+    fondo_dcho.y2 = 5;
+
+    // Jugador izquierdo
+    jug1.g = 0;
+    jug1.x1 = -6;
+    jug1.y1 = -1;
+    jug1.x2 = -6;
+    jug1.y2 = 1;
+
+    // Jugador derecho
+    jug2.g = 0;
+    jug2.x1 = 6;
+    jug2.y1 = -1;
+    jug2.x2 = 6;
+    jug2.y2 = 1;
+
+    // Abrir FIFO en modo escritura
+    fd_fifo = open("FIFO", O_WRONLY);
+
+    if (fd_fifo < 0)
+    {
+        std::perror("No se pudo abrir la FIFO");
+    }
 }
