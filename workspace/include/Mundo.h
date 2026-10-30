@@ -1,41 +1,45 @@
-// Mundo.h: interface for the CMundo class.
-//
-//////////////////////////////////////////////////////////////////////
+// Mundo.h - Practica 3 SII
+// Comunicacion mediante memoria compartida
 
 #if !defined(AFX_MUNDO_H__9510340A_3D75_485F_93DC_302A43B8039A__INCLUDED_)
 #define AFX_MUNDO_H__9510340A_3D75_485F_93DC_302A43B8039A__INCLUDED_
 
 #include <vector>
 #include "Plano.h"
+#include "DatosMemCompartida.h"
 
 #if _MSC_VER > 1000
 #pragma once
-#endif // _MSC_VER > 1000
+#endif
 
-#include "Esfera.h"
-#include "Raqueta.h"
-
-class CMundo  
+class CMundo
 {
 public:
-	void Init();
-	CMundo();
-	virtual ~CMundo();	
-	
-	void InitGL();	
-	void OnKeyboardDown(unsigned char key, int x, int y);
-	void OnTimer(int value);
-	void OnDraw();	
+    CMundo();
+    virtual ~CMundo();
 
-	Esfera esfera;
-	std::vector<Plano> paredes;
-	Plano fondo_izq;
-	Plano fondo_dcho;
-	Raqueta jugador1;
-	Raqueta jugador2;
+    void Init();
+    void InitGL();
+    void OnKeyboardDown(unsigned char key, int x, int y);
+    void OnTimer(int value);
+    void OnDraw();
 
-	int puntos1;
-	int puntos2;
+    // Elementos del juego
+    Esfera esfera;
+    std::vector<Plano> paredes;
+
+    Plano fondo_izq;
+    Plano fondo_dcho;
+
+    Raqueta jugador1;
+    Raqueta jugador2;
+
+    // Puntuaciones
+    int puntos1;
+    int puntos2;
+
+    // Memoria compartida con el bot
+    DatosMemCompartida* datos;
 };
 
-#endif // !defined(AFX_MUNDO_H__9510340A_3D75_485F_93DC_302A43B8039A__INCLUDED_)
+#endif

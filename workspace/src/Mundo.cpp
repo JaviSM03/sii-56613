@@ -1,30 +1,33 @@
 /*
- * Práctica 2 - Sistemas Informáticos Industriales - Javier Serrano Molina 
- * Juego Pong con comunicación FIFO
- * Finalización de la partida automática cuando uno de los 2 jugadores llega a 3 puntos
+ * Practica 3 - Sistemas Informaticos Industriales
+ * Juego Pong con FIFO y memoria compartida
+ * Control automatico del jugador 1 mediante bot
  */
 
-#include <fstream>
 #include "Mundo.h"
 #include "glut.h"
 
 #include <fcntl.h>
 #include <unistd.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <new>
 
 namespace
 {
     int fd_fifo = -1;
 
-    // Puntos necesarios para ganar
     const int PUNTOS_PARA_GANAR = 3;
 
-    // Mostrar el texto y enviarlo a logger
-    void enviarTexto(const char *texto)
+    // Nombre del archivo compartido con el bot
+    const char* ARCHIVO_MEMORIA = "memoriaCompartida";
+
+    // Enviar mensajes al logger mediante FIFO
+    void enviarTexto(const char* texto)
     {
-        
         if (fd_fifo >= 0)
         {
             ssize_t resultado = write(
@@ -38,7 +41,7 @@ namespace
         }
     }
 
-    // Notificar los puntos de cada jugador
+    // Registrar los puntos de cada jugador
     void registrarPunto(int jugador, int total)
     {
         char aviso[128];
@@ -54,7 +57,7 @@ namespace
         enviarTexto(aviso);
     }
 
-    // Terminar el juego cuando exista un ganador
+    // Finalizar cuando un jugador alcance 3 puntos
     void finalizarPartida(int ganador)
     {
         char avisoFinal[128];
@@ -68,32 +71,49 @@ namespace
 
         enviarTexto(avisoFinal);
 
-        // Cerrar FIFO para que logger reciba EOF
+        // Cerrar FIFO para que logger termine
         if (fd_fifo >= 0)
         {
             close(fd_fifo);
             fd_fifo = -1;
         }
 
-        // Finalizar el proceso tenis
+        // Finalizar tenis
+        // Al salir se ejecuta el destructor global de CMundo
         std::exit(EXIT_SUCCESS);
     }
 }
 
-CMundo::CMundo() : puntos1(0), puntos2(0)
+// CONSTRUCTOR Y DESTRUCTOR
+CMundo::CMundo() : puntos1(0), puntos2(0), datos(NULL)
 {
     Init();
 }
 
 CMundo::~CMundo()
 {
+    // Cerrar FIFO
     if (fd_fifo >= 0)
     {
         close(fd_fifo);
         fd_fifo = -1;
     }
+
+    // Liberar la memoria compartida
+    if (datos != NULL)
+    {
+        datos->~DatosMemCompartida();
+
+        munmap(datos, sizeof(DatosMemCompartida));
+        datos = NULL;
+    }
+
+    // Eliminar el archivo compartido
+    unlink(ARCHIVO_MEMORIA);
 }
 
+
+// CONFIGURACION GRAFICA
 void CMundo::InitGL()
 {
     glEnable(GL_DEPTH_TEST);
@@ -105,7 +125,9 @@ void CMundo::InitGL()
     gluPerspective(40.0, 800 / 600.0f, 0.1, 150);
 }
 
-void print(char *texto, int posX, int posY,
+
+// MOSTRAR TEXTO EN LA VENTANA
+void print(char* texto, int posX, int posY,
            float rojo, float verde, float azul)
 {
     glDisable(GL_LIGHTING);
@@ -161,6 +183,8 @@ void print(char *texto, int posX, int posY,
     glEnable(GL_DEPTH_TEST);
 }
 
+
+// DIBUJAR EL JUEGO
 void CMundo::OnDraw()
 {
     auto &jug1 = jugador1;
@@ -178,7 +202,7 @@ void CMundo::OnDraw()
         0.0, 1.0, 0.0
     );
 
-    // Mostrar marcador
+    // Mostrar el marcador
     char marcador[100];
 
     std::snprintf(
@@ -201,7 +225,7 @@ void CMundo::OnDraw()
         pared.Dibuja();
     }
 
-    // Dibujar limites
+    // Dibujar limites del campo
     fondo_izq.Dibuja();
     fondo_dcho.Dibuja();
 
@@ -213,15 +237,39 @@ void CMundo::OnDraw()
     glutSwapBuffers();
 }
 
+
+// MOVIMIENTO, REBOTES Y MEMORIA COMPARTIDA
 void CMundo::OnTimer(int value)
 {
     auto &jug1 = jugador1;
     auto &jug2 = jugador2;
     auto &bola = esfera;
 
-    const float tiempo = 0.025f;
+    float tiempo = 0.025f;
 
-    // Actualizar movimientos
+    
+    // MOVIMIENTO BOT
+    if (datos != NULL)
+    {
+        if (datos->accion == 1)
+        {
+            // bot subir
+            OnKeyboardDown('w', 0, 0);
+        }
+        else if (datos->accion == -1)
+        {
+            // bot bajar
+            OnKeyboardDown('s', 0, 0);
+        }
+        else
+        {
+            // bot quieto
+            jug1.velocidad.y = 0;
+        }
+    }
+
+    
+    // ACTUALIZAR MOVIMIENTOS
     jug1.Mueve(tiempo);
     jug2.Mueve(tiempo);
     bola.Mueve(tiempo);
@@ -234,63 +282,73 @@ void CMundo::OnTimer(int value)
         pared.Rebota(jug2);
     }
 
-    // Rebotes contra las raquetas
+    // Rebotes con las raquetas
     jug1.Rebota(bola);
     jug2.Rebota(bola);
 
+    // PUNTO PARA JUGADOR 2
     if (fondo_izq.Rebota(bola))
     {
         puntos2++;
 
-        // Reiniciar posicion
         bola.centro.x = 0;
         bola.centro.y =
             std::rand() / (float)RAND_MAX;
 
-        // Nueva velocidad hacia la derecha
         bola.velocidad.x =
             2 + 2 * std::rand() / (float)RAND_MAX;
 
         bola.velocidad.y =
             2 + 2 * std::rand() / (float)RAND_MAX;
 
-        // Avisar al logger
         registrarPunto(2, puntos2);
 
-        // Comprobar si ha ganado
         if (puntos2 >= PUNTOS_PARA_GANAR)
         {
             finalizarPartida(2);
         }
     }
-
+    
+    // PUNTO PARA JUGADOR 1
     if (fondo_dcho.Rebota(bola))
     {
         puntos1++;
 
-        // Reiniciar posicion
         bola.centro.x = 0;
         bola.centro.y =
             std::rand() / (float)RAND_MAX;
 
-        // Nueva velocidad hacia la izquierda
         bola.velocidad.x =
             -2 - 2 * std::rand() / (float)RAND_MAX;
 
         bola.velocidad.y =
             -2 - 2 * std::rand() / (float)RAND_MAX;
 
-        // Avisar al logger
         registrarPunto(1, puntos1);
 
-        // Comprobar si ha ganado
         if (puntos1 >= PUNTOS_PARA_GANAR)
         {
             finalizarPartida(1);
         }
     }
+
+  
+    // ACTUALIZAR MEMORIA COMPARTIDA
+    if (datos != NULL)
+    {
+        // Compartir la pelota
+        datos->esfera = bola;
+
+        // Compartir la raqueta del jugador 1
+        datos->raqueta1 = jug1;
+
+        // No modificamos datos->accion aqui:
+        // ese valor lo escribe el bot
+    }
 }
 
+
+// CONTROLES DEL TECLADO
 void CMundo::OnKeyboardDown(unsigned char tecla,
                              int x, int y)
 {
@@ -319,6 +377,8 @@ void CMundo::OnKeyboardDown(unsigned char tecla,
     }
 }
 
+
+// INICIALIZACION DEL MUNDO
 void CMundo::Init()
 {
     auto &jug1 = jugador1;
@@ -368,7 +428,56 @@ void CMundo::Init()
     jug2.x2 = 6;
     jug2.y2 = 1;
 
-    // Abrir FIFO en modo escritura
+  
+    // CREAR EL ARCHIVO DE MEMORIA COMPARTIDA
+    int fd_memoria = open(
+        ARCHIVO_MEMORIA,
+        O_CREAT | O_RDWR | O_TRUNC,
+        0666
+    );
+
+    if (fd_memoria < 0)
+    {
+        std::perror("No se pudo crear la memoria compartida");
+    }
+    else
+    {
+        // Ajustar el tamaño del archivo
+        if (ftruncate(fd_memoria, sizeof(DatosMemCompartida)) < 0)
+        {
+            std::perror("Error en ftruncate");
+        }
+        else
+        {
+            // Proyectar el archivo en memoria
+            void* direccion = mmap(
+                NULL,
+                sizeof(DatosMemCompartida),
+                PROT_READ | PROT_WRITE,
+                MAP_SHARED,
+                fd_memoria,
+                0
+            );
+
+            if (direccion == MAP_FAILED)
+            {
+                std::perror("Error en mmap");
+            }
+            else
+            {
+                // Inicializar el objeto en memoria
+                datos = new (direccion) DatosMemCompartida;
+
+                datos->esfera = esfera;
+                datos->raqueta1 = jugador1;
+                datos->accion = 0;
+            }
+        }
+
+        close(fd_memoria);
+    }
+
+    // ABRIR FIFO DE LA PRACTICA 2
     fd_fifo = open("FIFO", O_WRONLY);
 
     if (fd_fifo < 0)
